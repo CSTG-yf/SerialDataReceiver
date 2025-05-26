@@ -9,10 +9,14 @@ from serial_receiver import SerialReceiver, SerialConfig
 import sys
 import os
 from datetime import datetime
+import pyqtgraph as pg  # 新增绘图库导入
+from PyQt5.QtWidgets import QComboBox  # 新增下拉框导入
 
 
 class SerialPortWidget(QWidget):
     """单个串口控件，带标题的紧凑布局"""
+    # 新增：连接状态变化信号定义
+    connection_state_changed = pyqtSignal()
 
     def __init__(self, port_index: int, parent=None):
         super().__init__(parent)
@@ -57,6 +61,18 @@ class SerialPortWidget(QWidget):
 
         # 创建日志目录
         os.makedirs(self.log_dir, exist_ok=True)
+
+        # 初始化绘图数据存储（时间戳和各参数值）
+        self.plot_data = {
+            'time': [],  # 存储时间戳（秒数）
+            'lat': [],
+            'lon': [],
+            'speed': [],
+            'course': [],
+            'satellites': [],
+            'altitude': []
+        }
+        self.max_plot_points = 1000  # 最多保存1000个点
 
         self.init_ui()
 
@@ -202,15 +218,33 @@ class SerialPortWidget(QWidget):
             'altitude': latest_gga.get("altitude", "-")
         }
 
-        # 打印解析数据中的时间
-       
-
         # 记录上一次显示的数据
         if not hasattr(self, 'last_display_data'):
             self.last_display_data = {}
 
-        # 仅在数据有更新时才更新显示
+        # 仅在数据有更新时才更新绘图数据
         if new_display_data != self.last_display_data:
+            # 记录当前时间戳（秒数）
+            current_time = datetime.now().timestamp()
+            self.plot_data['time'].append(current_time)
+            # 限制数据长度
+            if len(self.plot_data['time']) > self.max_plot_points:
+                for key in self.plot_data:
+                    self.plot_data[key].pop(0)
+
+            # 存储各参数值（转换为浮点数）
+            try:
+                self.plot_data['lat'].append(float(new_display_data['lat']))
+                self.plot_data['lon'].append(float(new_display_data['lon']))
+                self.plot_data['speed'].append(float(new_display_data['speed']))
+                self.plot_data['course'].append(float(new_display_data['course']))
+                self.plot_data['satellites'].append(float(new_display_data['satellites']))
+                self.plot_data['altitude'].append(float(new_display_data['altitude']))
+            except ValueError:
+                # 无效数据时填充NaN
+                for key in ['lat', 'lon', 'speed', 'course', 'satellites', 'altitude']:
+                    self.plot_data[key].append(float('nan'))
+
             for key in new_display_data:
                 self.data_values[key].setText(new_display_data[key])  # 改为QLabel的setText
             self.last_display_data = new_display_data.copy()
@@ -257,11 +291,9 @@ class SerialPortWidget(QWidget):
         if self.serial_receiver:
             parsed_data = self.serial_receiver.parse_nmea_data(data)
             if parsed_data:
-                self.parsed_data_buffer += parsed_data + "\n"
+                self.parsed_data_buffer += parsed_data + '\n'
                 if len(self.parsed_data_buffer) > self.max_display_length:
                     self.parsed_data_buffer = self.parsed_data_buffer[-self.max_display_length:]
-
-               
 
     def create_new_log_file(self, port_name: str):
         """创建新的日志文件"""
@@ -332,12 +364,15 @@ class SerialPortWidget(QWidget):
             self.serial_receiver = SerialReceiver(config, self.port_index)
             self.serial_receiver.data_received.connect(self.on_data_received)
             self.serial_receiver.error_occurred.connect(self.on_serial_error)
+            self.serial_receiver.connection_established.connect(lambda: self.connection_state_changed.emit())
             self.serial_receiver.start()
 
             self.connect_btn.setText("断开")
             self.port_combo.setEnabled(False)
             self.baudrate_combo.setEnabled(False)
             self.details_btn.setEnabled(True)
+            # 已有：触发状态变化信号
+            self.connection_state_changed.emit()
 
         except Exception as e:
             QMessageBox.critical(self, "错误", f"连接错误: {str(e)}")
@@ -496,7 +531,8 @@ class SerialReceiverApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("多串口数据接收器")
-        self.resize(1600, 800)  # 调整窗口大小
+        self.resize(1600, 1000)  # 调整窗口大小
+
 
         # 创建界面
         self.init_ui()
@@ -539,7 +575,6 @@ class SerialReceiverApp(QMainWindow):
         # 添加占位控件以对齐串口控件布局
         title_layout.addWidget(QLabel(""))  # 串口号占位
         title_layout.addWidget(QLabel(""))  # 串口选择占位
-        # 移除刷新按钮占位
         title_layout.addWidget(QLabel(""))  # 波特率占位
         title_layout.addWidget(QLabel(""))  # 连接按钮占位
         title_layout.addWidget(QLabel(""))  # 自动保存占位
@@ -576,6 +611,8 @@ class SerialReceiverApp(QMainWindow):
         self.port_widgets = []
         for i in range(1, 9):
             port_widget = SerialPortWidget(i)
+            # 新增：监听串口状态变化信号
+            port_widget.connection_state_changed.connect(self.update_port_select)
             self.port_widgets.append(port_widget)
             self.port_layout.addWidget(port_widget)
 
@@ -590,32 +627,121 @@ class SerialReceiverApp(QMainWindow):
         scroll_area.setWidget(self.port_container)
         main_layout.addWidget(scroll_area, stretch=1)
 
+        # 添加绘图组件到主布局底部
+        self.plot_widget = pg.PlotWidget()
+        self.plot_widget.setBackground('w')  # 设置背景为白色
+        self.plot_widget.setLabel('left', 'Y轴值')
+        self.plot_widget.setLabel('bottom', '时间（秒）')
+        self.legend = self.plot_widget.addLegend()
+
+        # 添加串口选择框到绘图界面右上角
+        self.port_select = QComboBox()
+        self.port_select.setFixedWidth(150)
+        self.port_select.currentIndexChanged.connect(self.update_plot)
+        self.port_select.setCurrentIndex(-1)  # 默认不选择任何选项
+
+        # 使用 QGraphicsProxyWidget 包装 QComboBox
+        proxy = self.plot_widget.plotItem.getViewBox().scene().addWidget(self.port_select)
+        # 设置选择框位置到右上角
+        plot_width = self.plot_widget.plotItem.boundingRect().width()
+        proxy.setPos(plot_width - self.port_select.width() - 10, 10)
+
+        main_layout.addWidget(self.plot_widget)
+
         self.setCentralWidget(main_widget)
 
+        # 设置定时器更新绘图
+        self.update_timer = QTimer()
+        self.update_timer.timeout.connect(self.update_plot)
+        self.update_timer.start(1000)  # 每秒更新一次
+
+        # 初始化串口选择框
+        self.update_port_select()
+
+    def update_port_select(self):
+        """更新串口选择框内容（仅显示已连接的串口）"""
+        self.port_select.clear()
+        # 取消添加"全部串口"选项
+        for i, widget in enumerate(self.port_widgets, start=1):
+            if widget.serial_receiver and widget.serial_receiver.is_connected:
+                self.port_select.addItem(f"串口{i} - {widget.serial_receiver.config.port}")
+        self.port_select.setCurrentIndex(-1)  # 清空选择状态
+
     def refresh_all(self):
-        """刷新所有串口"""
         for widget in self.port_widgets:
             widget.refresh_ports()
+        self.update_port_select()
 
     def clear_all(self):
-        """清空所有数据"""
         for widget in self.port_widgets:
             widget.data_buffer = ""
             widget.parsed_data_buffer = ""
-            widget.data_size_label.setText("0 KB")
-
-            # 清空数据显示
+            widget.file_write_buffer = ""
+            widget.data_size_label.setText("0KB")
             for value in widget.data_values.values():
                 value.setText("-")
 
-    def closeEvent(self, event):
-        """窗口关闭事件"""
-        for widget in self.port_widgets:
-            widget.close()
-        event.accept()
+    def update_plot(self):
+        """更新绘图内容（仅绘制选中串口的数据）"""
+        self.plot_widget.clear()  # 清空旧数据
+        selected_port = self.port_select.currentText()
+    
+        # 未选择串口时直接返回
+        if not selected_port:
+            return
+    
+        # 解析选中的串口索引
+        port_index = int(selected_port.split(" - ")[0].replace("串口", "")) - 1
+        target_widget = self.port_widgets[port_index]
+    
+        # 验证目标串口是否有效
+        if not (target_widget.serial_receiver and target_widget.serial_receiver.is_connected):
+            
+            self.update_port_select()  # 刷新选择框
+            return
+    
+        # 获取目标串口的绘图数据
+        plot_data = {
+            'time': target_widget.plot_data['time'],
+            'lat': target_widget.plot_data['lat'],
+            'lon': target_widget.plot_data['lon'],
+            'speed': target_widget.plot_data['speed'],
+            'course': target_widget.plot_data['course'],
+            'satellites': target_widget.plot_data['satellites'],
+            'altitude': target_widget.plot_data['altitude']
+        }
+    
+        # 定义参数与曲线的映射关系
+        param_map = {
+            '纬度': 'lat',
+            '经度': 'lon',
+            '速度(km/h)': 'speed',
+            '航向(°)': 'course',
+            '卫星数': 'satellites',
+            '海拔(m)': 'altitude'
+        }
+    
+        # 定义各曲线颜色
+        colors = ['#FF0000', '#00FF00', '#0000FF', '#FFA500', '#800080', '#008080']
+    
+        # 绘制各参数曲线
+        for idx, (name, key) in enumerate(param_map.items()):
+            if plot_data['time'] and plot_data[key]:
+                curve = self.plot_widget.plot(
+                    plot_data['time'], plot_data[key],
+                    name=name,
+                    pen=pg.mkPen(color=colors[idx], width=2)
+                )
+                # 绑定图例点击事件（切换可见性）
+                legend_item = self.legend.items[-1][1] if self.legend.items else None
+                if legend_item:
+                    # 找到并删除/注释掉图例项的点击事件绑定代码（示例位置）
+                    # 原代码（假设存在）：
+                    # legend_item.mouseClickEvent = lambda ev, c=curve: setattr(c, 'visible', not c.visible)
+                    legend_item.setToolTip(f"点击切换 {name} 曲线显示")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     app = QApplication(sys.argv)
     window = SerialReceiverApp()
     window.show()

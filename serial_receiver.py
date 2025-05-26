@@ -119,6 +119,7 @@ class NMEAParser:
 class SerialReceiver(QThread):
     data_received = pyqtSignal(str)  # 数据接收信号
     error_occurred = pyqtSignal(str)  # 错误发生信号
+    connection_established = pyqtSignal()  # 新增：连接成功信号
 
     def __init__(self, config: SerialConfig, port_index: int):
         super().__init__()
@@ -140,6 +141,7 @@ class SerialReceiver(QThread):
                 timeout=self.config.timeout
             )
             self._is_connected = True
+            self.connection_established.emit()  # 新增：连接成功时触发信号
 
             # 优化读取参数
             read_chunk_size = 1024  # 每次读取1KB
