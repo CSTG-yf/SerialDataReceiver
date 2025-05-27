@@ -559,10 +559,10 @@ class SerialReceiverApp(QMainWindow):
         self.refresh_btn.clicked.connect(self.refresh_all)
         control_layout.addWidget(self.refresh_btn)
 
-        self.clear_all_btn = QPushButton("清空所有数据")
-        self.clear_all_btn.setFixedWidth(120)
-        self.clear_all_btn.clicked.connect(self.clear_all)
-        control_layout.addWidget(self.clear_all_btn)
+        # 原有的清空所有数据按钮（删除以下3行）
+        # self.clear_all_btn = QPushButton("清空所有数据")
+        # self.clear_all_btn.clicked.connect(self.clear_all)
+        # main_layout.addWidget(self.clear_all_btn)
 
         first_row_layout.addWidget(control_group)
 
@@ -634,19 +634,37 @@ class SerialReceiverApp(QMainWindow):
         self.plot_widget.setLabel('bottom', '时间（秒）')
         self.legend = self.plot_widget.addLegend()
 
-        # 添加串口选择框到绘图界面右上角
+        # 新建一个放置选择框的容器（关键修改）
+        select_container = QWidget()
+        select_layout = QHBoxLayout(select_container)
+        select_layout.setContentsMargins(0, 5, 10, 5)  # 调整边距
+        select_layout.setAlignment(Qt.AlignRight)  # 右对齐
+
+        # 新增：参数曲线勾选框组
+        param_group = QWidget()
+        param_layout = QHBoxLayout(param_group)
+        param_layout.setContentsMargins(0, 0, 10, 0)
+        self.param_checkboxes = {}  # 保存勾选框引用
+
+        # 参数列表（与param_map一致）
+        params = ['纬度', '经度', '速度(km/h)', '航向(°)', '卫星数', '海拔(m)']
+        for param in params:
+            checkbox = QCheckBox(param)
+            checkbox.setChecked(True)  # 默认全部选中
+            self.param_checkboxes[param] = checkbox
+            param_layout.addWidget(checkbox)
+        select_layout.addWidget(param_group)  # 添加到选择框左侧
+
+        # 添加串口选择框到容器中
         self.port_select = QComboBox()
         self.port_select.setFixedWidth(150)
         self.port_select.currentIndexChanged.connect(self.update_plot)
         self.port_select.setCurrentIndex(-1)  # 默认不选择任何选项
+        select_layout.addWidget(self.port_select)
 
-        # 使用 QGraphicsProxyWidget 包装 QComboBox
-        proxy = self.plot_widget.plotItem.getViewBox().scene().addWidget(self.port_select)
-        # 设置选择框位置到右上角
-        plot_width = self.plot_widget.plotItem.boundingRect().width()
-        proxy.setPos(plot_width - self.port_select.width() - 10, 10)
-
-        main_layout.addWidget(self.plot_widget)
+        # 将容器添加到绘图区域上方（关键修改）
+        main_layout.addWidget(select_container)
+        main_layout.addWidget(self.plot_widget)  # 绘图组件保持在下方
 
         self.setCentralWidget(main_widget)
 
@@ -682,7 +700,7 @@ class SerialReceiverApp(QMainWindow):
                 value.setText("-")
 
     def update_plot(self):
-        """更新绘图内容（仅绘制选中串口的数据）"""
+        """更新绘图内容（仅绘制选中串口且勾选的参数曲线）"""
         self.plot_widget.clear()  # 清空旧数据
         selected_port = self.port_select.currentText()
     
@@ -696,7 +714,6 @@ class SerialReceiverApp(QMainWindow):
     
         # 验证目标串口是否有效
         if not (target_widget.serial_receiver and target_widget.serial_receiver.is_connected):
-            
             self.update_port_select()  # 刷新选择框
             return
     
@@ -724,9 +741,9 @@ class SerialReceiverApp(QMainWindow):
         # 定义各曲线颜色
         colors = ['#FF0000', '#00FF00', '#0000FF', '#FFA500', '#800080', '#008080']
     
-        # 绘制各参数曲线
+        # 仅绘制被勾选的参数曲线
         for idx, (name, key) in enumerate(param_map.items()):
-            if plot_data['time'] and plot_data[key]:
+            if self.param_checkboxes[name].isChecked() and plot_data['time'] and plot_data[key]:
                 curve = self.plot_widget.plot(
                     plot_data['time'], plot_data[key],
                     name=name,
@@ -735,9 +752,6 @@ class SerialReceiverApp(QMainWindow):
                 # 绑定图例点击事件（切换可见性）
                 legend_item = self.legend.items[-1][1] if self.legend.items else None
                 if legend_item:
-                    # 找到并删除/注释掉图例项的点击事件绑定代码（示例位置）
-                    # 原代码（假设存在）：
-                    # legend_item.mouseClickEvent = lambda ev, c=curve: setattr(c, 'visible', not c.visible)
                     legend_item.setToolTip(f"点击切换 {name} 曲线显示")
 
 

@@ -223,9 +223,15 @@ class SerialReceiver(QThread):
             if not line:
                 continue
 
-            if line.startswith('$GNRMC'):
-                output.append(f"原始: {line}")
-                result = NMEAParser.parse_gnrmc(line.split(','))
+            # 查找GNRMC或GNGGA标识符的位置（处理前导乱码）
+            gnrmc_pos = line.find('$GNRMC')
+            gngga_pos = line.find('$GNGGA')
+            
+            # 优先处理GNRMC（可根据实际协议优先级调整）
+            if gnrmc_pos != -1:
+                valid_line = line[gnrmc_pos:]  # 提取从$GNRMC开始的有效部分
+                output.append(f"原始: {valid_line}")
+                result = NMEAParser.parse_gnrmc(valid_line.split(','))
                 if result['valid']:
                     output.append(
                         f"解析: [GNRMC]\n"
@@ -238,10 +244,12 @@ class SerialReceiver(QThread):
                 else:
                     output.append(f"解析: [GNRMC] {result.get('status', '无效数据')}\n")
                 output.append("")
+                continue  # 处理完当前标识符后跳过后续检查
 
-            elif line.startswith('$GNGGA'):
-                output.append(f"原始: {line}")
-                result = NMEAParser.parse_gngga(line.split(','))
+            if gngga_pos != -1:
+                valid_line = line[gngga_pos:]  # 提取从$GNGGA开始的有效部分
+                output.append(f"原始: {valid_line}")
+                result = NMEAParser.parse_gngga(valid_line.split(','))
                 if result['valid']:
                     output.append(
                         f"解析: [GNGGA]\n"
