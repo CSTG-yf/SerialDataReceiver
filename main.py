@@ -48,7 +48,19 @@ class SerialPortWidget(QWidget):
             'altitude': QLabel("-")
         }
 
-        for value in self.data_values.values():
+        # 新增：定义各数据项的工具提示文本
+        data_tooltips = {
+            'time': '时间',
+            'lat': '纬度（°）',
+            'lon': '经度（°）',
+            'speed': '速度（节）',
+            'course': '航向（°）',
+            'satellites': '可用卫星数量',
+            'altitude': '海拔（米）'
+        }
+
+        # 修改循环为遍历键值对（原遍历values()）
+        for key, value in self.data_values.items():
             value.setAlignment(Qt.AlignCenter)  # 居中对齐
             value.setStyleSheet("""
                 QLabel {
@@ -58,6 +70,8 @@ class SerialPortWidget(QWidget):
                     background: #f8f8f8;
                 }
             """)
+            # 新增：设置工具提示
+            value.setToolTip(data_tooltips[key])
 
         # 创建日志目录
         os.makedirs(self.log_dir, exist_ok=True)
@@ -94,6 +108,9 @@ class SerialPortWidget(QWidget):
         self.port_combo = QComboBox()
         self.port_combo.setFixedWidth(100)
         self.refresh_ports()
+        # 新增：绑定选择变化事件并初始化工具提示
+        self.port_combo.currentTextChanged.connect(self.update_port_tooltip)
+        self.update_port_tooltip()  # 初始设置工具提示
         layout.addWidget(self.port_combo, 0, 1)
 
         # 波特率选择（原80→70）
@@ -123,9 +140,10 @@ class SerialPortWidget(QWidget):
         # 数据量显示
         self.data_size_label = QLabel("0KB")
         self.data_size_label.setFixedWidth(50)
-        layout.addWidget(self.data_size_label, 0, 7)
+        self.data_size_label.setToolTip("已记录：0 KB（0 字节）")  # 初始提示
+        layout.addWidget(self.data_size_label, 0, 6)  # 原列7→列6
 
-        # 数据值显示区域（关键修改）
+        # 数据值显示区域（从列7开始）
         data_labels = ["time", "lat", "lon", "speed", "course", "satellites", "altitude"]
         for col, key in enumerate(data_labels, start=7):
             value = self.data_values[key]
@@ -144,7 +162,7 @@ class SerialPortWidget(QWidget):
                 }
             """)
             layout.addWidget(value, 0, col)
-            layout.setColumnStretch(col, 1)  # 设置列拉伸因子，允许自动扩展
+            layout.setColumnStretch(col, 1)
 
         # 详情按钮（原60→50）
         self.details_btn = QPushButton("详情")
@@ -161,13 +179,19 @@ class SerialPortWidget(QWidget):
         self.update_timer.start(100)  # 100ms更新一次
 
     def refresh_ports(self):
-        """刷新可用串口列表"""
+        """刷新可用串口列表（显示COM3，工具提示显示完整描述）"""
         current_port = self.port_combo.currentText()
         self.port_combo.clear()
-        ports = SerialReceiver.get_available_ports()
-        self.port_combo.addItems(ports)
-        if current_port in ports:
+        ports = SerialReceiver.get_available_ports()  # 现在获取(设备名, 描述)列表
+        
+        for device, description in ports:
+            self.port_combo.addItem(device)  # 下拉列表显示设备名（如COM3）
+            # 为每个选项设置工具提示为完整描述
+            self.port_combo.setItemData(self.port_combo.count()-1, description, Qt.ToolTipRole)
+        
+        if current_port in [device for device, _ in ports]:
             self.port_combo.setCurrentText(current_port)
+        self.update_port_tooltip()  # 初始设置工具提示
 
     def update_display(self):
         """更新数据显示（增加强制更新逻辑）"""
@@ -263,11 +287,20 @@ class SerialPortWidget(QWidget):
 
         # 增加逻辑判断，只有按下连接按钮且自动保存开启时才统计数据量
         if self.serial_receiver and self.serial_receiver.is_connected and self.auto_save_enabled:
-            # 更新数据量显示（修改此处：使用实际写入的字节数）
-            self.data_size_label.setText(f"{self.bytes_written // 1024} KB")
+            # 计算KB和字节数
+            kb = self.bytes_written // 1024
+            bytes_total = self.bytes_written
+            # 更新显示文本和工具提示（优化：仅内容变化时更新）
+            self.data_size_label.setText(f"{kb} KB")
+            new_tooltip = f"已记录：{kb} KB（{bytes_total} 字节）"
+            if self.data_size_label.toolTip() != new_tooltip:  # 关键修改
+                self.data_size_label.setToolTip(new_tooltip)
         else:
-            # 若不满足条件，重置数据量显示
+            # 若不满足条件，重置数据量显示和工具提示（同样优化）
             self.data_size_label.setText("0KB")
+            new_tooltip = "已记录：0 KB（0 字节）"
+            if self.data_size_label.toolTip() != new_tooltip:  # 关键修改
+                self.data_size_label.setToolTip(new_tooltip)
 
         # 写入文件
         if self.auto_save_enabled and self.current_log_file and self.serial_receiver and self.serial_receiver.is_connected:
@@ -346,9 +379,10 @@ class SerialPortWidget(QWidget):
             QMessageBox.warning(self, "警告", "请选择串口")
             return
 
-        # 检查串口是否存在
+        # 检查串口是否存在（修复关键）
         available_ports = SerialReceiver.get_available_ports()
-        if port not in available_ports:
+        available_devices = [device for device, _ in available_ports]  # 提取所有可用设备名
+        if port not in available_devices:
             QMessageBox.critical(self, "错误", "所选串口不存在")
             return
 
@@ -416,6 +450,18 @@ class SerialPortWidget(QWidget):
         """处理串口错误"""
         QMessageBox.critical(self, "错误", error_msg)
         self.disconnect_serial()
+
+    def update_port_tooltip(self):
+        """更新串口选择框的工具提示更新（显示当前选中的完整设备信息）"""
+        current_index = self.port_combo.currentIndex()
+        if current_index != -1:
+            # 获取当前选项的完整描述（通过ToolTipRole获取）
+            full_info = self.port_combo.itemData(current_index, Qt.ToolTipRole)
+            if self.port_combo.toolTip() != full_info:  # 关键修改
+                self.port_combo.setToolTip(full_info)
+        else:
+            if self.port_combo.toolTip() != "":  # 关键修改
+                self.port_combo.setToolTip("") 
 
     def show_port_details(self):
         """显示详情窗口"""
@@ -566,11 +612,6 @@ class SerialReceiverApp(QMainWindow):
         self.refresh_btn.clicked.connect(self.refresh_all)
         control_layout.addWidget(self.refresh_btn)
 
-        # 原有的清空所有数据按钮（删除以下3行）
-        # self.clear_all_btn = QPushButton("清空所有数据")
-        # self.clear_all_btn.clicked.connect(self.clear_all)
-        # main_layout.addWidget(self.clear_all_btn)
-
         first_row_layout.addWidget(control_group)
 
         # 标题区域 - 使用与数据行相同的布局
@@ -654,7 +695,7 @@ class SerialReceiverApp(QMainWindow):
         self.param_checkboxes = {}  # 保存勾选框引用
 
         # 参数列表（与param_map一致）
-        params = ['纬度', '经度', '速度(km/h)', '航向(°)', '卫星数', '海拔(m)']
+        params = ['纬度', '经度', '速度(节)', '航向(°)', '卫星数', '海拔(m)']
         for param in params:
             checkbox = QCheckBox(param)
             checkbox.setChecked(True)  # 默认全部选中
@@ -684,13 +725,15 @@ class SerialReceiverApp(QMainWindow):
         self.update_port_select()
 
     def update_port_select(self):
-        """更新串口选择框内容（仅显示已连接的串口）"""
+        """更新串口选择框内容（添加空选项）"""
         self.port_select.clear()
-        # 取消添加"全部串口"选项
+        # 添加空选项（选择后不绘制任何串口数据）
+        self.port_select.addItem("无")  # 显示文本为"无"
+        # 遍历已连接的串口添加选项
         for i, widget in enumerate(self.port_widgets, start=1):
             if widget.serial_receiver and widget.serial_receiver.is_connected:
                 self.port_select.addItem(f"串口{i} - {widget.serial_receiver.config.port}")
-        self.port_select.setCurrentIndex(-1)  # 清空选择状态
+        self.port_select.setCurrentIndex(-1)  # 清空选择状态（可选：若需默认显示空选项可改为setCurrentIndex(0)）
 
     def refresh_all(self):
         for widget in self.port_widgets:
@@ -710,20 +753,25 @@ class SerialReceiverApp(QMainWindow):
         """更新绘图内容（仅绘制选中串口且勾选的参数曲线）"""
         self.plot_widget.clear()  # 清空旧数据
         selected_port = self.port_select.currentText()
-    
-        # 未选择串口时直接返回
+        selected_index = self.port_select.currentIndex()  # 获取当前选择的索引
+        
+        # 选择空选项（索引0）时直接返回
+        if selected_index == 0:
+            return
+        
+        # 未选择有效串口时返回
         if not selected_port:
             return
-    
+        
         # 解析选中的串口索引
         port_index = int(selected_port.split(" - ")[0].replace("串口", "")) - 1
         target_widget = self.port_widgets[port_index]
-    
+        
         # 验证目标串口是否有效
         if not (target_widget.serial_receiver and target_widget.serial_receiver.is_connected):
             self.update_port_select()  # 刷新选择框
             return
-    
+        
         # 获取目标串口的绘图数据
         plot_data = {
             'time': target_widget.plot_data['time'],
@@ -734,20 +782,20 @@ class SerialReceiverApp(QMainWindow):
             'satellites': target_widget.plot_data['satellites'],
             'altitude': target_widget.plot_data['altitude']
         }
-    
+        
         # 定义参数与曲线的映射关系
         param_map = {
             '纬度': 'lat',
             '经度': 'lon',
-            '速度(km/h)': 'speed',
+            '速度(节)': 'speed',
             '航向(°)': 'course',
             '卫星数': 'satellites',
             '海拔(m)': 'altitude'
         }
-    
+        
         # 定义各曲线颜色
         colors = ['#FF0000', '#00FF00', '#0000FF', '#FFA500', '#800080', '#008080']
-    
+        
         # 仅绘制被勾选的参数曲线
         for idx, (name, key) in enumerate(param_map.items()):
             if self.param_checkboxes[name].isChecked() and plot_data['time'] and plot_data[key]:

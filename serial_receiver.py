@@ -316,12 +316,17 @@ class SerialReceiver(QThread):
     def is_connected(self):
         return self._is_connected
 
+    # 原方法可能返回纯字符串列表，需修改为元组列表
     @staticmethod
     def get_available_ports() -> list:
-        """获取所有可用串口"""
+        """获取所有可用串口及其详细信息（设备名+描述）"""
         try:
-            ports = [port.device for port in serial.tools.list_ports.comports()]
-            return sorted(ports)
+            import serial.tools.list_ports  # 确保导入正确模块
+            ports = []
+            for port in serial.tools.list_ports.comports():
+                # 构造 (设备名, 完整描述) 元组
+                ports.append((port.device, port.description))
+            return ports
         except Exception as e:
             print(f"获取串口列表错误: {str(e)}")
             return []
