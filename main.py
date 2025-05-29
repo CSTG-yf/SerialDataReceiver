@@ -74,6 +74,9 @@ class SerialPortWidget(QWidget):
         }
         self.max_plot_points = 1000  # 最多保存1000个点
 
+        # 关键修复：初始化 last_display_data
+        self.last_display_data = {}  # 新增
+
         self.init_ui()
 
     def init_ui(self):
@@ -120,7 +123,7 @@ class SerialPortWidget(QWidget):
         # 数据量显示
         self.data_size_label = QLabel("0KB")
         self.data_size_label.setFixedWidth(50)
-        layout.addWidget(self.data_size_label, 0, 6)
+        layout.addWidget(self.data_size_label, 0, 7)
 
         # 数据值显示区域（关键修改）
         data_labels = ["time", "lat", "lon", "speed", "course", "satellites", "altitude"]
@@ -167,7 +170,7 @@ class SerialPortWidget(QWidget):
             self.port_combo.setCurrentText(current_port)
 
     def update_display(self):
-        """更新数据显示"""
+        """更新数据显示（增加强制更新逻辑）"""
         if not self.parsed_data_buffer:
             return
 
@@ -218,12 +221,15 @@ class SerialPortWidget(QWidget):
             'altitude': latest_gga.get("altitude", "-")
         }
 
-        # 记录上一次显示的数据
-        if not hasattr(self, 'last_display_data'):
-            self.last_display_data = {}
+        # 记录上一次显示的数据（新增时间戳）
+        if not hasattr(self, 'last_update_time'):
+            self.last_update_time = datetime.now().timestamp()
 
-        # 仅在数据有更新时才更新绘图数据
-        if new_display_data != self.last_display_data:
+        current_time = datetime.now().timestamp()
+        # 关键修改：即使数据未变化，每5秒强制更新
+        force_update = (current_time - self.last_update_time) > 5
+
+        if new_display_data != self.last_display_data or force_update:
             # 记录当前时间戳（秒数）
             current_time = datetime.now().timestamp()
             self.plot_data['time'].append(current_time)
@@ -248,6 +254,7 @@ class SerialPortWidget(QWidget):
             for key in new_display_data:
                 self.data_values[key].setText(new_display_data[key])  # 改为QLabel的setText
             self.last_display_data = new_display_data.copy()
+            self.last_update_time = current_time  # 更新时间戳
 
     def on_data_received(self, data: str):
         """处理接收到的数据"""

@@ -130,7 +130,7 @@ class SerialReceiver(QThread):
         self._should_stop = False
 
     def run(self):
-        """接收数据的线程循环"""
+        """接收数据的线程循环（优化错误处理）"""
         try:
             self.serial_port = serial.Serial(
                 port=self.config.port,
@@ -141,13 +141,13 @@ class SerialReceiver(QThread):
                 timeout=self.config.timeout
             )
             self._is_connected = True
-            self.connection_established.emit()  # 新增：连接成功时触发信号
+            self.connection_established.emit()
 
-            # 优化读取参数
-            read_chunk_size = 1024  # 每次读取1KB
-            max_read_per_loop = 8192  # 每次循环最多读取8KB
-            error_count = 0  # 错误计数器
-            max_error_count = 5  # 最大允许错误次数
+            # 增加：延长错误容忍次数（原5次→10次）
+            max_error_count = 10  # 关键修改
+            error_count = 0
+            read_chunk_size = 1024
+            max_read_per_loop = 8192
 
             while not self._should_stop and self.serial_port and self.serial_port.is_open:
                 try:
@@ -175,10 +175,19 @@ class SerialReceiver(QThread):
                 except serial.SerialException as e:
                     error_count += 1
                     if error_count >= max_error_count:
-                        self.error_occurred.emit(f"串口读取错误: {str(e)} (连续错误{error_count}次)")
-                        break
-                    # 短暂延迟后重试
-                    self.msleep(100)
+                        # 关键修改：触发错误后尝试自动重连（30秒内）
+                        self.error_occurred.emit(f"串口读取错误: {str(e)}，尝试30秒后重连...")
+                        self.msleep(30000)  # 等待30秒
+                        error_count = 0  # 重置计数器
+                        # 重新初始化串口连接
+                        self.serial_port.close()
+                        self.serial_port = serial.Serial(
+                            port=self.config.port,
+                            baudrate=self.config.baudrate,
+                            timeout=self.config.timeout
+                        )
+                    else:
+                        self.msleep(100)  # 短暂延迟后重试
 
                 except OSError as e:
                     # 处理系统资源错误
