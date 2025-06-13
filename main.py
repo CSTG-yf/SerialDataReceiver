@@ -1,4 +1,5 @@
-import serial
+from doctest import FAIL_FAST
+import serial,qdarkstyle
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QComboBox, QPushButton, QGroupBox, QScrollArea, QFileDialog,
                              QMessageBox, QGridLayout, QSizePolicy, QCheckBox, QTableWidget,
@@ -10,7 +11,7 @@ import sys
 import os
 from datetime import datetime
 import pyqtgraph as pg  # 新增绘图库导入
-from PyQt5.QtWidgets import QComboBox  # 新增下拉框导入
+from PyQt5.QtGui import QIcon  # 新增图标类导入
 
 
 class SerialPortWidget(QWidget):
@@ -100,7 +101,7 @@ class SerialPortWidget(QWidget):
 
         # 串口标识（原50→40）
         self.port_label = QLabel(f"串口{self.port_index}")
-        self.port_label.setFixedWidth(40)
+        self.port_label.setFixedWidth(50)
         self.port_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.port_label, 0, 0)
 
@@ -115,8 +116,8 @@ class SerialPortWidget(QWidget):
 
         # 波特率选择（原80→70）
         self.baudrate_combo = QComboBox()
-        self.baudrate_combo.addItems(['9600', '19200', '38400', '57600', '115200'])
-        self.baudrate_combo.setCurrentText('9600')
+        self.baudrate_combo.addItems(['9600', '14400','19200', '28800','38400', '57600', '115200','230400','460800','921600'])
+        self.baudrate_combo.setCurrentText('115200')
         self.baudrate_combo.setFixedWidth(80)
         layout.addWidget(self.baudrate_combo, 0, 2)
 
@@ -135,11 +136,14 @@ class SerialPortWidget(QWidget):
         # 新增：显示当前保存的文件名
         self.filename_label = QLabel("未保存")
         self.filename_label.setAlignment(Qt.AlignLeft)
+        self.filename_label.setTextInteractionFlags(Qt.TextSelectableByMouse)  # 新增可选中属性
+        self.filename_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)  # 允许水平扩展
+        self.filename_label.setWordWrap(True)  # 允许自动换行
         layout.addWidget(self.filename_label, 0, 5, 1, 1)  # 添加伸缩因子，让标签能扩展
 
         # 数据量显示
         self.data_size_label = QLabel("0KB")
-        self.data_size_label.setFixedWidth(50)
+        self.data_size_label.setFixedWidth(70)
         self.data_size_label.setToolTip("已记录：0 KB（0 字节）")  # 初始提示
         layout.addWidget(self.data_size_label, 0, 6)  # 原列7→列6
 
@@ -159,6 +163,7 @@ class SerialPortWidget(QWidget):
                     border: 1px solid #eee;
                     border-radius: 3px;
                     background: #f8f8f8;
+                    color: black; 
                 }
             """)
             layout.addWidget(value, 0, col)
@@ -257,12 +262,8 @@ class SerialPortWidget(QWidget):
             # 记录当前时间戳（秒数）
             current_time = datetime.now().timestamp()
             self.plot_data['time'].append(current_time)
-            # 限制数据长度
-            if len(self.plot_data['time']) > self.max_plot_points:
-                for key in self.plot_data:
-                    self.plot_data[key].pop(0)
 
-            # 存储各参数值（转换为浮点数）
+            # 尝试转换并添加参数值（处理无效数据时填充NaN）
             try:
                 self.plot_data['lat'].append(float(new_display_data['lat']))
                 self.plot_data['lon'].append(float(new_display_data['lon']))
@@ -271,12 +272,21 @@ class SerialPortWidget(QWidget):
                 self.plot_data['satellites'].append(float(new_display_data['satellites']))
                 self.plot_data['altitude'].append(float(new_display_data['altitude']))
             except ValueError:
-                # 无效数据时填充NaN
                 for key in ['lat', 'lon', 'speed', 'course', 'satellites', 'altitude']:
                     self.plot_data[key].append(float('nan'))
 
+            # 关键修复：同步截断所有数组
+            current_length = len(self.plot_data['time'])
+            if current_length > self.max_plot_points:
+                # 计算需要截断的起始位置（保留最后max_plot_points个数据）
+                truncate_start = current_length - self.max_plot_points
+                for key in self.plot_data:
+                    # 对每个数组执行同步截断
+                    self.plot_data[key] = self.plot_data[key][truncate_start:]
+
+            # 更新显示标签
             for key in new_display_data:
-                self.data_values[key].setText(new_display_data[key])  # 改为QLabel的setText
+                self.data_values[key].setText(new_display_data[key])
             self.last_display_data = new_display_data.copy()
             self.last_update_time = current_time  # 更新时间戳
 
@@ -446,6 +456,10 @@ class SerialPortWidget(QWidget):
         for value in self.data_values.values():
             value.setText("-")
 
+        # 新增：清空绘图数据存储
+        for key in self.plot_data:
+            self.plot_data[key].clear()
+
     def on_serial_error(self, error_msg: str):
         """处理串口错误"""
         QMessageBox.critical(self, "错误", error_msg)
@@ -584,7 +598,7 @@ class SerialReceiverApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("多串口数据接收器")
-        self.resize(1600, 1000)  # 调整窗口大小
+        self.resize(1600, 1200)  # 调整窗口大小
 
 
         # 创建界面
@@ -596,6 +610,7 @@ class SerialReceiverApp(QMainWindow):
         main_layout = QVBoxLayout(main_widget)
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(5)
+        self.setWindowIcon(QIcon("icon/app_window.svg"))
 
         # 第一行：控制按钮和标题
         first_row = QWidget()
@@ -607,7 +622,7 @@ class SerialReceiverApp(QMainWindow):
         control_layout = QHBoxLayout(control_group)
         control_layout.setContentsMargins(5, 5, 5, 5)
 
-        self.refresh_btn = QPushButton("刷新所有串口")
+        self.refresh_btn = QPushButton("刷新可用串口")
         self.refresh_btn.setFixedWidth(120)
         self.refresh_btn.clicked.connect(self.refresh_all)
         control_layout.addWidget(self.refresh_btn)
@@ -636,10 +651,10 @@ class SerialReceiverApp(QMainWindow):
         titles = ["时间", "纬度", "经度", "速度", "航向", "卫星", "海拔"]
         for title in titles:
             title_label = QLabel(title)
-            title_label.setFixedWidth(112)
+            title_label.setFixedWidth(107)
             title_label.setAlignment(Qt.AlignCenter)
             title_label.setFont(title_font)
-            title_label.setStyleSheet("color: #666;")
+            title_label.setStyleSheet("color: white;")
             title_layout.addWidget(title_label)
 
         first_row_layout.addWidget(title_widget, stretch=1)
@@ -681,6 +696,8 @@ class SerialReceiverApp(QMainWindow):
         self.plot_widget.setLabel('left', 'Y轴值')
         self.plot_widget.setLabel('bottom', '时间（秒）')
         self.legend = self.plot_widget.addLegend()
+        # 初始隐藏绘图区域
+        self.plot_widget.hide()
 
         # 新建一个放置选择框的容器（关键修改）
         select_container = QWidget()
@@ -698,7 +715,7 @@ class SerialReceiverApp(QMainWindow):
         params = ['纬度', '经度', '速度(节)', '航向(°)', '卫星数', '海拔(m)']
         for param in params:
             checkbox = QCheckBox(param)
-            checkbox.setChecked(True)  # 默认全部选中
+            checkbox.setChecked(False)  # 默认全部选中
             self.param_checkboxes[param] = checkbox
             param_layout.addWidget(checkbox)
         select_layout.addWidget(param_group)  # 添加到选择框左侧
@@ -757,12 +774,15 @@ class SerialReceiverApp(QMainWindow):
         
         # 选择空选项（索引0）时直接返回
         if selected_index == 0:
+            self.plot_widget.hide()  # 隐藏绘图区域
             return
         
         # 未选择有效串口时返回
         if not selected_port:
+            self.plot_widget.hide()  # 隐藏绘图区域
             return
         
+        self.plot_widget.show()  # 显示绘图区域
         # 解析选中的串口索引
         port_index = int(selected_port.split(" - ")[0].replace("串口", "")) - 1
         target_widget = self.port_widgets[port_index]
@@ -813,5 +833,7 @@ class SerialReceiverApp(QMainWindow):
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     window = SerialReceiverApp()
+    app.setStyleSheet(qdarkstyle.load_stylesheet_pyqt5())
+    app.setStyleSheet(qdarkstyle.load_stylesheet(qt_api='pyqt5'))
     window.show()
     sys.exit(app.exec_())
