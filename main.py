@@ -456,9 +456,12 @@ class SerialPortWidget(QWidget):
         for value in self.data_values.values():
             value.setText("-")
 
-        # 新增：清空绘图数据存储
+        # 清空绘图数据存储
         for key in self.plot_data:
             self.plot_data[key].clear()
+
+        # 关键新增：触发连接状态变化信号
+        self.connection_state_changed.emit()
 
     def on_serial_error(self, error_msg: str):
         """处理串口错误"""
@@ -610,7 +613,13 @@ class SerialReceiverApp(QMainWindow):
         main_layout = QVBoxLayout(main_widget)
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(5)
-        self.setWindowIcon(QIcon("icon/app_window.svg"))
+        if getattr(sys, 'frozen', False):
+            # 打包环境：使用PyInstaller临时目录中的资源
+            icon_path = os.path.join(sys._MEIPASS, 'icon', 'app_window.svg')
+        else:
+            # 开发环境：使用项目根目录下的相对路径
+            icon_path = os.path.join('icon', 'app_window.svg')
+        self.setWindowIcon(QIcon(icon_path))
 
         # 第一行：控制按钮和标题
         first_row = QWidget()
@@ -697,39 +706,42 @@ class SerialReceiverApp(QMainWindow):
         self.plot_widget.setLabel('bottom', '时间（秒）')
         self.legend = self.plot_widget.addLegend()
         # 初始隐藏绘图区域
-        self.plot_widget.hide()
+        
 
-        # 新建一个放置选择框的容器（关键修改）
-        select_container = QWidget()
-        select_layout = QHBoxLayout(select_container)
-        select_layout.setContentsMargins(0, 5, 10, 5)  # 调整边距
-        select_layout.setAlignment(Qt.AlignRight)  # 右对齐
+        # 绘图区域控制部分
+        plot_control_container = QWidget()
+        plot_control_layout = QHBoxLayout(plot_control_container)
+        plot_control_layout.setContentsMargins(0, 5, 10, 5)
 
-        # 新增：参数曲线勾选框组
-        param_group = QWidget()
-        param_layout = QHBoxLayout(param_group)
-        param_layout.setContentsMargins(0, 0, 10, 0)
-        self.param_checkboxes = {}  # 保存勾选框引用
+        # 参数选择框
+        self.param_combo = QComboBox()
+        self.param_combo.setFixedWidth(150)
+        self.param_combo.addItems(['纬度', '经度', '速度(节)', '航向(°)', '卫星数', '海拔(m)'])
+        self.param_combo.currentIndexChanged.connect(self.update_plot)
+        plot_control_layout.addWidget(self.param_combo)
 
-        # 参数列表（与param_map一致）
-        params = ['纬度', '经度', '速度(节)', '航向(°)', '卫星数', '海拔(m)']
-        for param in params:
-            checkbox = QCheckBox(param)
-            checkbox.setChecked(False)  # 默认全部选中
-            self.param_checkboxes[param] = checkbox
-            param_layout.addWidget(checkbox)
-        select_layout.addWidget(param_group)  # 添加到选择框左侧
+        # 串口勾选框组 - 直接初始化8个勾选框
+        self.port_checkbox_container = QWidget()
+        self.port_checkbox_layout = QHBoxLayout(self.port_checkbox_container)
+        self.port_checkbox_layout.setContentsMargins(5, 0, 5, 0)  # 调整左右边距为5，更紧凑
+        self.port_checkbox_layout.setSpacing(8)  # 缩小勾选框间距
+        self.port_checkboxes = {}  # 保存串口勾选框引用
+        
+        
+        
+        # 移除原伸缩因子，使勾选框自然靠左紧凑
+        # self.port_checkbox_layout.addStretch()  # 注释掉多余的伸缩因子
+        
+        # 初始提示标签（调整样式使其不影响勾选框紧凑性）
+        self.no_ports_label = QLabel("无连接的串口")
+        self.no_ports_label.setStyleSheet("color: #666;")
+        self.port_checkbox_layout.addWidget(self.no_ports_label)
+        
+        plot_control_layout.addWidget(self.port_checkbox_container)
 
-        # 添加串口选择框到容器中
-        self.port_select = QComboBox()
-        self.port_select.setFixedWidth(150)
-        self.port_select.currentIndexChanged.connect(self.update_plot)
-        self.port_select.setCurrentIndex(-1)  # 默认不选择任何选项
-        select_layout.addWidget(self.port_select)
+        main_layout.addWidget(plot_control_container)
+        main_layout.addWidget(self.plot_widget)
 
-        # 将容器添加到绘图区域上方（关键修改）
-        main_layout.addWidget(select_container)
-        main_layout.addWidget(self.plot_widget)  # 绘图组件保持在下方
 
         self.setCentralWidget(main_widget)
 
@@ -740,17 +752,48 @@ class SerialReceiverApp(QMainWindow):
 
         # 初始化串口选择框
         self.update_port_select()
+        self.plot_widget.hide()
 
     def update_port_select(self):
-        """更新串口选择框内容（添加空选项）"""
-        self.port_select.clear()
-        # 添加空选项（选择后不绘制任何串口数据）
-        self.port_select.addItem("无")  # 显示文本为"无"
-        # 遍历已连接的串口添加选项
-        for i, widget in enumerate(self.port_widgets, start=1):
-            if widget.serial_receiver and widget.serial_receiver.is_connected:
-                self.port_select.addItem(f"串口{i} - {widget.serial_receiver.config.port}")
-        self.port_select.setCurrentIndex(-1)  # 清空选择状态（可选：若需默认显示空选项可改为setCurrentIndex(0)）
+        """更新串口勾选框（保留已勾选状态，移除断开连接的串口勾选框）"""
+        # 记录当前已存在的勾选框索引和勾选状态
+        existing_checkboxes = {index: checkbox.isChecked() for index, checkbox in self.port_checkboxes.items()}
+    
+        # 清除提示标签（仅移除提示，不清除勾选框）
+        if self.no_ports_label.parent() is not None:
+            self.no_ports_label.setParent(None)
+    
+        # 获取当前所有已连接的串口索引
+        connected_ports = [i for i, widget in enumerate(self.port_widgets, start=1) 
+                          if widget.serial_receiver and widget.serial_receiver.is_connected]
+
+        # 移除已断开连接的串口对应的勾选框
+        for index in list(self.port_checkboxes.keys()):
+            if index not in connected_ports:
+                self.port_checkbox_layout.removeWidget(self.port_checkboxes[index])
+                self.port_checkboxes[index].setParent(None)
+                del self.port_checkboxes[index]
+    
+        # 添加新连接的串口勾选框（仅添加不存在的）
+        for port_index in connected_ports:
+            if port_index not in self.port_checkboxes:
+                checkbox = QCheckBox(f"串口{port_index}")
+                checkbox.setChecked(False)  # 新添加默认未勾选
+                checkbox.stateChanged.connect(self.update_plot)
+                self.port_checkboxes[port_index] = checkbox
+                self.port_checkbox_layout.addWidget(checkbox)
+    
+        # 恢复原有勾选框的勾选状态
+        for index, checkbox in self.port_checkboxes.items():
+            if index in existing_checkboxes:
+                checkbox.setChecked(existing_checkboxes[index])
+    
+        # 处理无连接串口的提示
+        if not connected_ports:
+            self.no_ports_label = QLabel("无连接的串口")
+            self.port_checkbox_layout.addWidget(self.no_ports_label)
+            
+        self.update_plot()
 
     def refresh_all(self):
         for widget in self.port_widgets:
@@ -767,43 +810,13 @@ class SerialReceiverApp(QMainWindow):
                 value.setText("-")
 
     def update_plot(self):
-        """更新绘图内容（仅绘制选中串口且勾选的参数曲线）"""
+        """更新绘图内容"""
         self.plot_widget.clear()  # 清空旧数据
-        selected_port = self.port_select.currentText()
-        selected_index = self.port_select.currentIndex()  # 获取当前选择的索引
         
-        # 选择空选项（索引0）时直接返回
-        if selected_index == 0:
-            self.plot_widget.hide()  # 隐藏绘图区域
-            return
+        # 获取选中的参数
+        selected_param = self.param_combo.currentText()
         
-        # 未选择有效串口时返回
-        if not selected_port:
-            self.plot_widget.hide()  # 隐藏绘图区域
-            return
-        
-        self.plot_widget.show()  # 显示绘图区域
-        # 解析选中的串口索引
-        port_index = int(selected_port.split(" - ")[0].replace("串口", "")) - 1
-        target_widget = self.port_widgets[port_index]
-        
-        # 验证目标串口是否有效
-        if not (target_widget.serial_receiver and target_widget.serial_receiver.is_connected):
-            self.update_port_select()  # 刷新选择框
-            return
-        
-        # 获取目标串口的绘图数据
-        plot_data = {
-            'time': target_widget.plot_data['time'],
-            'lat': target_widget.plot_data['lat'],
-            'lon': target_widget.plot_data['lon'],
-            'speed': target_widget.plot_data['speed'],
-            'course': target_widget.plot_data['course'],
-            'satellites': target_widget.plot_data['satellites'],
-            'altitude': target_widget.plot_data['altitude']
-        }
-        
-        # 定义参数与曲线的映射关系
+        # 参数映射
         param_map = {
             '纬度': 'lat',
             '经度': 'lon',
@@ -813,22 +826,43 @@ class SerialReceiverApp(QMainWindow):
             '海拔(m)': 'altitude'
         }
         
-        # 定义各曲线颜色
-        colors = ['#FF0000', '#00FF00', '#0000FF', '#FFA500', '#800080', '#008080']
-        
-        # 仅绘制被勾选的参数曲线
-        for idx, (name, key) in enumerate(param_map.items()):
-            if self.param_checkboxes[name].isChecked() and plot_data['time'] and plot_data[key]:
-                curve = self.plot_widget.plot(
-                    plot_data['time'], plot_data[key],
-                    name=name,
-                    pen=pg.mkPen(color=colors[idx], width=2)
-                )
-                # 绑定图例点击事件（切换可见性）
-                legend_item = self.legend.items[-1][1] if self.legend.items else None
-                if legend_item:
-                    legend_item.setToolTip(f"点击切换 {name} 曲线显示")
+        param_key = param_map.get(selected_param)
 
+        
+        # 定义颜色列表
+        colors = ['#FF0000', '#00FF00', '#0000FF', '#FFA500', '#800080', '#008080', '#FF00FF', '#00FFFF']
+        
+        # 绘制每个选中的串口数据
+        for i, widget in enumerate(self.port_widgets):
+            port_num = i + 1
+            if port_num in self.port_checkboxes and self.port_checkboxes[port_num].isChecked():
+                if widget.serial_receiver and widget.serial_receiver.is_connected:
+                    # 获取该串口的绘图数据
+                    time_data = widget.plot_data['time']
+                    param_data = widget.plot_data[param_key]
+                    
+                    if time_data and param_data:
+                        # 新增：检查并截断数据长度，确保X和Y数组长度一致
+                        min_len = min(len(time_data), len(param_data))
+                        time_data = time_data[:min_len]  # 截断时间数据
+                        param_data = param_data[:min_len]  # 截断参数数据
+
+                        color = colors[i % len(colors)]
+                        self.plot_widget.plot(
+                            time_data, param_data,
+                            name=f"串口{port_num}",
+                            pen=pg.mkPen(color=color, width=2))
+        
+        # 更新坐标轴标签
+        self.plot_widget.setLabel('left', selected_param)
+        self.plot_widget.setLabel('bottom', '时间（秒）')
+
+        # 新增：根据勾选状态控制绘图区域显示/隐藏
+        has_checked = any(checkbox.isChecked() for checkbox in self.port_checkboxes.values())
+        if has_checked:
+            self.plot_widget.show()
+        else:
+            self.plot_widget.hide()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

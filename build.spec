@@ -7,9 +7,9 @@ a = Analysis(
     pathex=['D:\SerialReceiver'],  # 修改为你的项目路径
     binaries=[],
     datas=[
-        (r'D:\SerialDataReceiver\icon\myapp.ico', 'icon'),  # 添加ico图标
-        (r'D:\SerialDataReceiver\icon\\app_window.svg', 'icon')  # 添加svg图标
-    ],
+        (os.path.join(project_path, 'icon', 'myapp.ico'), 'icon'),
+        (os.path.join(project_path, 'icon', 'app_window.svg'), 'icon')
+    ]  # 修改此处为相对路径
     hiddenimports=['PyQt5.QtCore', 'PyQt5.QtGui', 'PyQt5.QtWidgets', 'serial'],
     hookspath=[],
     hooksconfig={},
